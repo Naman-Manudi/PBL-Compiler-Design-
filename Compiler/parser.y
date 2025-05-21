@@ -1,186 +1,264 @@
 %{
-/* C declarations */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-/* Symbol table and 3AC generation functions */
+// Error reporting function for the parser
 void yyerror(const char *s);
 extern int yylex();
 extern FILE *yyin;
 
-/* Variables for 3AC generation */
-int temp_var_count = 0;
-int label_count = 0;
-char temp_var_name[10];
+// --- 3AC Generation Utilities ---
+int temp_var_count = 0; // Counter for temporary variables (t0, t1, ...)
+int label_count = 0;   // Counter for labels (L0, L1, ...)
 
-/* Function prototypes for 3AC generation */
-char* new_temp();
-int new_label();
-void emit(char *op, char *arg1, char *arg2, char *result);
+// Function to generate a new temporary variable name
+char* new_temp() {
+    char* temp = (char*)malloc(10);
+    sprintf(temp, "t%d", temp_var_count++);
+    return temp;
+}
+
+// Function to generate a new label name
+char* new_label() {
+    char* label = (char*)malloc(10);
+    sprintf(label, "L%d", label_count++);
+    return label;
+}
+
+// Function to print generated 3AC code
+void emit(const char* code) {
+    printf("%s", code);
+}
 %}
 
-/* Yacc definitions */
+/* --- Semantic Value Types --- */
 %union {
-    int intval;
-    char *strval;
-    struct expr_info {
-        char *addr;  /* Address for 3AC */
-        char *code;  /* Code for 3AC */
+    int intval; // For integer values (NUM)
+    char* strval;  // For identifiers (ID)
+    char* strval; 
+    struct {
+        char* code; // Holds generated 3AC code for this subtree
+        char* addr; // Holds the address (variable/temp) representing the value
     } expr;
 }
 
-%token <intval> NUM
-%token <strval> ID
-%token INT FLOAT CHAR IF ELSE WHILE RETURN
-%token PLUS MINUS MULT DIV ASSIGN
-%token EQ NEQ LT GT LTE GTE
-%token SEMICOLON LBRACE RBRACE LPAREN RPAREN
+/* --- Token Declarations (Terminals) --- */
 
-%type <expr> expr term factor statement assignment declaration statements program
+%token <strval> ID
+%token <intval> NUM
+%token INT IF ELSE WHILE RETURN
+%token PLUS MINUS MULT DIV ASSIGN EQ NEQ LT GT LTE GTE
+%token SEMICOLON COMMA LBRACE RBRACE LPAREN RPAREN
+
+/* --- Non-terminal Type Declarations --- */
+
+%type <expr> expr term factor rel_expr
+%type <expr> stmt stmt_block decl_list decl return_stmt
 
 %start program
 
 %%
-/* Yacc grammar rules */
+/* --- Grammar Rules Start Here --- */
+// The main entry point: parses a C-style main function with declarations, statements, and a return
+program
+    : INT ID LPAREN RPAREN LBRACE decl_list stmt_block return_stmt RBRACE
+      { emit($6.code); 
+      emit($7.code); 
+      emit($8.code); 
+      }
+    ;
 
-program: statements
-        {
-            printf("// 3AC Generated Successfully\n");
-            printf("%s", $1.code);
-        }
-        ;
 
-statements: statement
-        {
-            $$.code = $1.code;
-        }
-        | statements statement
-        {
-            $$.code = (char*)malloc(strlen($1.code) + strlen($2.code) + 1);
-            sprintf($$.code, "%s%s", $1.code, $2.code);
-        }
-        ;
-
-statement: assignment SEMICOLON
-        {
-            $$.code = $1.code;
-        }
-        | declaration SEMICOLON
-        {
-            $$.code = $1.code;
-        }
-        /* Add rules for if, while, etc. */
-        ;
-
-declaration: INT ID
-        {
-            $$.code = (char*)malloc(50);
-            sprintf($$.code, "// Declare int %s\n", $2);
-            /* Add to symbol table */
-        }
-        /* Add rules for other types */
-        ;
-
-assignment: ID ASSIGN expr
-        {
-            $$.code = (char*)malloc(strlen($3.code) + 50);
-            sprintf($$.code, "%s%s = %s\n", $3.code, $1, $3.addr);
-        }
-        ;
-
-expr: expr PLUS term
-    {
-        char* temp = new_temp();
-        $$.addr = temp;
-        $$.code = (char*)malloc(strlen($1.code) + strlen($3.code) + 100);
-        sprintf($$.code, "%s%s%s = %s + %s\n", $1.code, $3.code, temp, $1.addr, $3.addr);
+decl_list
+    : /* empty */ { $$.code = strdup(""); }
+    | decl_list decl { 
+        $$.code = (char*)malloc(strlen($1.code) + strlen($2.code) + 1);
+        sprintf($$.code, "%s%s", $1.code, $2.code);
     }
-    | expr MINUS term
-    {
-        char* temp = new_temp(); 
-        $$.addr = temp;
-        $$.code = (char*)malloc(strlen($1.code) + strlen($3.code) + 100);
-        sprintf($$.code, "%s%s%s = %s - %s\n", $1.code, $3.code, temp, $1.addr, $3.addr);
+    ;
+
+// Handles a single variable declaration (e.g., int a, b;)
+decl
+    : INT id_list SEMICOLON { $$.code = strdup(""); }
+    ;
+
+// Handles a comma-separated list of identifiers in declarations
+id_list
+    : ID
+    | id_list COMMA ID
+    ;
+
+// Handles a (possibly empty) block of statements
+stmt_block
+    : /* empty */ { $$.code = strdup(""); }
+    | stmt_block stmt { 
+        $$.code = (char*)malloc(strlen($1.code) + strlen($2.code) + 1);
+        sprintf($$.code, "%s%s", $1.code, $2.code);
     }
-    | term
-    {
+    ;
+
+
+// Handles all supported statements: assignment, if-else, if, while
+stmt
+     // Assignment: ID = expr;
+    : ID ASSIGN expr SEMICOLON {
+        char* code = (char*)malloc(strlen($3.code) + 50);
+        sprintf(code, "%s%s = %s\n", $3.code, $1, $3.addr);
+        $$.code = code;
+    }
+    
+     // If-Else statement
+    | IF LPAREN rel_expr RPAREN LBRACE stmt_block RBRACE ELSE LBRACE stmt_block RBRACE {
+        char* ltrue = new_label();
+        char* lfalse = new_label();
+        char* lend = new_label();
+        char* code = (char*)malloc(2048);
+        sprintf(code, "%sif (%s) goto %s\ngoto %s\n%s:\n%s goto %s\n%s:\n%s%s:\n",
+            $3.code, $3.addr, ltrue, lfalse,
+            ltrue, $6.code, lend,
+            lfalse, $10.code, lend);
+        $$.code = code;
+    }
+
+     // If statement (no else)
+    | IF LPAREN rel_expr RPAREN LBRACE stmt_block RBRACE {
+        char* ltrue = new_label();
+        char* lend = new_label();
+        char* code = (char*)malloc(1024);
+        sprintf(code, "%sif (%s) goto %s\ngoto %s\n%s:\n%s%s:\n",
+            $3.code, $3.addr, ltrue, lend,
+            ltrue, $6.code, lend);
+        $$.code = code;
+    }
+     // While loop
+    | WHILE LPAREN rel_expr RPAREN LBRACE stmt_block RBRACE {
+        char* lstart = new_label();
+        char* lbody = new_label();
+        char* lend = new_label();
+        char* code = (char*)malloc(2048);
+        sprintf(code, "%s:\n%sif (%s) goto %s\ngoto %s\n%s:\n%s goto %s\n%s:\n",
+            lstart, $3.code, $3.addr, lbody, lend,
+            lbody, $6.code, lstart, lend);
+        $$.code = code;
+    }
+    ;
+// Handles a return statement: return expr;
+return_stmt
+    : RETURN expr SEMICOLON {
+        char* code = (char*)malloc(strlen($2.code) + 50);
+        sprintf(code, "%sreturn %s\n", $2.code, $2.addr);
+        $$.code = code;
+    }
+    ;
+
+// Handles arithmetic expressions with + and -
+expr
+    : expr PLUS term {
+        $$.addr = new_temp();
+        $$.code = (char*)malloc(strlen($1.code) + strlen($3.code) + 50);
+        sprintf($$.code, "%s%s%s = %s + %s\n", $1.code, $3.code, $$.addr, $1.addr, $3.addr);
+    }
+    | expr MINUS term {
+         // Generate 3AC: t = left - right
+        $$.addr = new_temp();
+        $$.code = (char*)malloc(strlen($1.code) + strlen($3.code) + 50);
+        sprintf($$.code, "%s%s%s = %s - %s\n", $1.code, $3.code, $$.addr, $1.addr, $3.addr);
+    }
+    | term {
+         // Single term, just propagate
         $$.addr = $1.addr;
         $$.code = $1.code;
     }
     ;
 
-term: term MULT factor
-    {
-        char* temp = new_temp();
-        $$.addr = temp;
-        $$.code = (char*)malloc(strlen($1.code) + strlen($3.code) + 100);
-        sprintf($$.code, "%s%s%s = %s * %s\n", $1.code, $3.code, temp, $1.addr, $3.addr);
+// Handles arithmetic expressions with * and /
+term
+    : term MULT factor`-------- {
+        // Generate 3AC: t = left * right
+        $$.addr = new_temp();
+        $$.code = (char*)malloc(strlen($1.code) + strlen($3.code) + 50);
+        sprintf($$.code, "%s%s%s = %s * %s\n", $1.code, $3.code, $$.addr, $1.addr, $3.addr);
     }
-    | term DIV factor
-    {
-        char* temp = new_temp();
-        $$.addr = temp;
-        $$.code = (char*)malloc(strlen($1.code) + strlen($3.code) + 100);
-        sprintf($$.code, "%s%s%s = %s / %s\n", $1.code, $3.code, temp, $1.addr, $3.addr);
+    | term DIV factor {
+        $$.addr = new_temp();
+        $$.code = (char*)malloc(strlen($1.code) + strlen($3.code) + 50);
+        sprintf($$.code, "%s%s%s = %s / %s\n", $1.code, $3.code, $$.addr, $1.addr, $3.addr);
     }
-    | factor
-    {
+    | factor {
         $$.addr = $1.addr;
         $$.code = $1.code;
     }
     ;
 
-factor: ID
-      {
-          $$.addr = $1;
-          $$.code = (char*)malloc(10);
-          $$.code[0] = '\0';  /* Empty string */
-      }
-      | NUM
-      {
-          $$.addr = (char*)malloc(20);
-          sprintf($$.addr, "%d", $1);
-          $$.code = (char*)malloc(10);
-          $$.code[0] = '\0';  /* Empty string */
-      }
-      | LPAREN expr RPAREN
-      {
-          $$.addr = $2.addr;
-          $$.code = $2.code;
-      }
-      ;
+// Handles variables, numbers, and parenthesized expressions
+factor
+    : ID {
+        $$.addr = strdup($1);
+        $$.code = strdup("");
+    }
+    | NUM {
+        $$.addr = (char*)malloc(20);
+        sprintf($$.addr, "%d", $1);
+        $$.code = strdup("");
+    }
+    | LPAREN expr RPAREN {
+        $$.addr = $2.addr;
+        $$.code = $2.code;
+    }
+    ;
+
+
+// Handles relational expressions for conditions
+rel_expr
+    : expr LT expr {
+        $$.addr = new_temp();
+        $$.code = (char*)malloc(strlen($1.code) + strlen($3.code) + 50);
+        sprintf($$.code, "%s%s%s = %s < %s\n", $1.code, $3.code, $$.addr, $1.addr, $3.addr);
+    }
+    | expr GT expr {
+        $$.addr = new_temp();
+        $$.code = (char*)malloc(strlen($1.code) + strlen($3.code) + 50);
+        sprintf($$.code, "%s%s%s = %s > %s\n", $1.code, $3.code, $$.addr, $1.addr, $3.addr);
+    }
+    | expr EQ expr {
+        $$.addr = new_temp();
+        $$.code = (char*)malloc(strlen($1.code) + strlen($3.code) + 50);
+        sprintf($$.code, "%s%s%s = %s == %s\n", $1.code, $3.code, $$.addr, $1.addr, $3.addr);
+    }
+    | expr NEQ expr {
+        $$.addr = new_temp();
+        $$.code = (char*)malloc(strlen($1.code) + strlen($3.code) + 50);
+        sprintf($$.code, "%s%s%s = %s != %s\n", $1.code, $3.code, $$.addr, $1.addr, $3.addr);
+    }
+    | expr LTE expr {
+        $$.addr = new_temp();
+        $$.code = (char*)malloc(strlen($1.code) + strlen($3.code) + 50);
+        sprintf($$.code, "%s%s%s = %s <= %s\n", $1.code, $3.code, $$.addr, $1.addr, $3.addr);
+    }
+    | expr GTE expr {
+        $$.addr = new_temp();
+        $$.code = (char*)malloc(strlen($1.code) + strlen($3.code) + 50);
+        sprintf($$.code, "%s%s%s = %s >= %s\n", $1.code, $3.code, $$.addr, $1.addr, $3.addr);
+    }
+    ;
 
 %%
 
-/* Additional C code for 3AC generation */
-char* new_temp() {
-    sprintf(temp_var_name, "t%d", temp_var_count++);
-    return strdup(temp_var_name);
-}
-
-int new_label() {
-    return label_count++;
-}
-
-void emit(char *op, char *arg1, char *arg2, char *result) {
-    if (arg2)
-        printf("%s = %s %s %s\n", result, arg1, op, arg2);
-    else
-        printf("%s = %s %s\n", result, op, arg1);
-}
-
+// Error reporting function for the parser
 void yyerror(const char *s) {
     fprintf(stderr, "Parse error: %s\n", s);
     exit(1);
 }
 
 int main(int argc, char **argv) {
-    if(argc > 1) {
-        if(!(yyin = fopen(argv[1], "r"))) {
+    if (argc > 1) {
+        FILE *input = fopen(argv[1], "r");
+        if (!input) {
             perror(argv[1]);
             return 1;
         }
+        yyin = input;
     }
     yyparse();
     return 0;
