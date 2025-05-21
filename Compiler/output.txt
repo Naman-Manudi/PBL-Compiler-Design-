@@ -1,0 +1,26 @@
+a = 5
+b = 10
+t0 = b * 2
+t1 = a + t0
+c = t1
+t2 = a < b
+if (t2) goto L0
+goto L1
+L0:
+t3 = c + 1
+c = t3
+ goto L2
+L1:
+t4 = c - 1
+c = t4
+L2:
+L3:
+t5 = c < 20
+if (t5) goto L4
+goto L5
+L4:
+t6 = c + 2
+c = t6
+ goto L3
+L5:
+return c
